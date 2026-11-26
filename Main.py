@@ -3,6 +3,9 @@ import secrets
 import string
 import questionary
 from cryptography.exceptions import UnsupportedAlgorithm
+from prompt_toolkit.application import Application
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import FormattedTextControl, Layout, Window
 
 from DataFileSetup import (
     DATA_FILE,
@@ -10,6 +13,7 @@ from DataFileSetup import (
     save_vault_and_recovery_sheet,
     setup_vault,
 )
+from SessionActivity import IdleLock, ask, watch_session
 from VaultCrypto import EncryptedVault, InvalidCredential, SUPPORTED_VAULT_FORMATS, VaultFileError, read_document
 
 # setup
@@ -17,21 +21,21 @@ def clear_screen():
     os.system("cls" if os.name == "nt" else "clear")
 
 
-def select_menu(message, choices):
-    return questionary.select(
-        message, choices=choices, qmark="", erase_when_done=True
-    ).unsafe_ask()
+def select_menu(message, choices, *, default=None):
+    return ask(questionary.select(
+        message, choices=choices, default=default, qmark="", erase_when_done=True
+    ))
 
 
 def save_data():
     vault_session.save()
 
 def delete_all_data():
-    confirm = questionary.confirm(
+    confirm = ask(questionary.confirm(
         "Are you sure you want to delete all data? This action cannot be undone.",
         default=False,
         qmark=""
-    ).unsafe_ask()
+    ))
     if not confirm:
         return
 
@@ -39,7 +43,7 @@ def delete_all_data():
         vault_session.delete()
     except (OSError, VaultFileError) as error:
         print(f"Could not delete data.json: {error}")
-        questionary.press_any_key_to_continue().unsafe_ask()
+        ask(questionary.press_any_key_to_continue())
         return
 
     print("data.json has been deleted. First-run setup will open when you restart Key Keep.")
@@ -47,23 +51,28 @@ def delete_all_data():
 
 
 
-def startup():
+def startup(*, locked=False):
     clear_screen()
     document, original = read_document(DATA_FILE)
     if document is None or document.get("format") not in SUPPORTED_VAULT_FORMATS:
+        if locked:
+            raise VaultFileError("The encrypted vault changed while the session was locked.")
         return setup_vault(DATA_FILE, document, original)
 
+    title = "Key Keep locked after 5 minutes of inactivity" if locked else "Unlock Key Keep"
+    choices = ["Enter Master Password"]
+    if not locked:
+        choices.append("Recover With a Backup Code")
+    choices.extend([questionary.Separator(" "), "Exit"])
+
     while True:
-        choice = select_menu("Unlock Key Keep", [
-            "Enter Master Password", "Recover With a Backup Code",
-            questionary.Separator(" "), "Exit",
-        ])
+        choice = select_menu(title, choices)
         if choice == "Exit":
             return None
 
         recovery = choice == "Recover With a Backup Code"
         label = "Backup code" if recovery else "Master password"
-        credential = questionary.password(label, qmark="").unsafe_ask()
+        credential = ask(questionary.password(label, qmark=""))
         try:
             session = EncryptedVault.unlock(DATA_FILE, document, original, credential, recovery=recovery)
         except InvalidCredential:
@@ -80,7 +89,7 @@ def startup():
                 print(f"Password updated. Code used. Unused backup codes: {remaining}.")
                 if not remaining:
                     print("Reset your master password in Settings to generate a new recovery sheet.")
-                questionary.press_any_key_to_continue().unsafe_ask()
+                ask(questionary.press_any_key_to_continue())
             else:
                 print("Legacy code accepted. Save a new sheet with four single-use codes.")
                 session = replace_master_password(session)
@@ -98,7 +107,7 @@ def ask_name(message, existing_names, default=""):
             return "That name already exists."
         return True
 
-    return questionary.text(message, default=default, validate=validate, qmark="").unsafe_ask().strip()
+    return ask(questionary.text(message, default=default, validate=validate, qmark="")).strip()
 
 
 def add_login(vault):
@@ -107,12 +116,12 @@ def add_login(vault):
 
     name = ask_name("Login name (e.g. Gmail)", vault)
     login = {
-        "email": questionary.text("Email", qmark="").unsafe_ask().strip(),
-        "password": questionary.password("Password", qmark="").unsafe_ask(),
-        "details": questionary.text("Details", qmark="").unsafe_ask().strip(),
-        "MasterPasswordRequired": questionary.confirm(
+        "email": ask(questionary.text("Email", qmark="")).strip(),
+        "password": ask(questionary.password("Password", qmark="")),
+        "details": ask(questionary.text("Details", qmark="")).strip(),
+        "MasterPasswordRequired": ask(questionary.confirm(
             "Require master password to view?", default=False, qmark=""
-        ).unsafe_ask(),
+        )),
     }
 
     while True:
@@ -130,11 +139,11 @@ def add_login(vault):
         if choice == "name":
             name = ask_name("Login name", vault, default=name)
         elif choice == "email":
-            login["email"] = questionary.text("Email", default=login["email"], qmark="").unsafe_ask().strip()
+            login["email"] = ask(questionary.text("Email", default=login["email"], qmark="")).strip()
         elif choice == "password":
-            login["password"] = questionary.password("Password", qmark="").unsafe_ask()
+            login["password"] = ask(questionary.password("Password", qmark=""))
         elif choice == "details":
-            login["details"] = questionary.text("Details", default=login["details"], qmark="").unsafe_ask().strip()
+            login["details"] = ask(questionary.text("Details", default=login["details"], qmark="")).strip()
         elif choice == "toggle":
             login["MasterPasswordRequired"] = not login["MasterPasswordRequired"]
         elif choice == "Save Login":
@@ -146,12 +155,40 @@ def add_login(vault):
 
 
 def unlock_with_master_password(message="Master Password"):
-    password = questionary.password(message, qmark="").unsafe_ask()
+    password = ask(questionary.password(message, qmark=""))
     if vault_session.password_matches(password):
         return True
     print("Incorrect master password.")
-    questionary.press_any_key_to_continue().unsafe_ask()
+    ask(questionary.press_any_key_to_continue())
     return False
+
+
+def reveal_password(password):
+    password = str(password)
+    if not password:
+        password = "(empty)"
+    elif not password.isprintable():
+        password = repr(password)
+
+    bindings = KeyBindings()
+
+    @bindings.add("enter")
+    @bindings.add("escape")
+    def hide(event):
+        event.app.exit()
+
+    @bindings.add("c-c")
+    def quit_app(event):
+        event.app.exit(exception=KeyboardInterrupt())
+
+    text = FormattedTextControl(f"Password: {password}\n\nPress Enter to hide.", focusable=True)
+    # Use the alternate screen so the revealed password is not printed to scrollback.
+    ask(questionary.Question(Application(
+        layout=Layout(Window(text)),
+        key_bindings=bindings,
+        full_screen=True,
+        erase_when_done=True,
+    )))
 
 
 def view_login(name, login):
@@ -160,12 +197,22 @@ def view_login(name, login):
     if required and not unlock_with_master_password():
         return
 
-    print(name)
-    for field, value in login.items():
-        if field != "MasterPasswordRequired":
-            print(f"{field.capitalize()}: {value}")
-    print("Master password required:", "On" if required else "Off")
-    questionary.press_any_key_to_continue().unsafe_ask()
+    password_field = next((field for field in login if field.lower() == "password"), None)
+    while True:
+        clear_screen()
+        print(name)
+        for field, value in login.items():
+            if field.lower() == "password":
+                print("Password: [hidden]")
+            elif field != "MasterPasswordRequired":
+                print(f"{field.capitalize()}: {value}")
+        print("Master password required:", "On" if required else "Off")
+
+        choices = ["Show Password", "Back"] if password_field is not None else ["Back"]
+        if select_menu("Login details", choices, default="Back") == "Back":
+            return
+
+        reveal_password(login[password_field])
 
 
 def vault_contents_screen(vault_name, vault):
@@ -209,9 +256,9 @@ def vaults_screen():
             return
         if selected == "New Vault":
             name = ask_name("Vault name", vaults)
-            required = questionary.confirm(
+            required = ask(questionary.confirm(
                 "Require the master password to open this vault?", default=False, qmark=""
-            ).unsafe_ask()
+            ))
             vaults[name] = {}
             if required:
                 protected_vaults[name] = True
@@ -286,12 +333,12 @@ def Generators_and_tools_screen():
         if choice == "Back to Menu":
             return
 
-        length = questionary.text(
+        length = ask(questionary.text(
             "Password length", default="20", validate=valid_password_length, qmark=""
-        ).unsafe_ask()
-        include_symbols = questionary.confirm("Include symbols?", default=True, qmark="").unsafe_ask()
+        ))
+        include_symbols = ask(questionary.confirm("Include symbols?", default=True, qmark=""))
         print(f"\nGenerated password: {generate_password(int(length), include_symbols)}")
-        questionary.press_any_key_to_continue().unsafe_ask()
+        ask(questionary.press_any_key_to_continue())
 
 
 
@@ -321,7 +368,7 @@ def reset_master_password():
         return
     print("Changing the password also replaces all four backup codes.")
     vault_session = replace_master_password(vault_session)
-    questionary.press_any_key_to_continue().unsafe_ask()
+    ask(questionary.press_any_key_to_continue())
 
 
 def settings_screen():
@@ -343,13 +390,7 @@ def settings_screen():
 
 
 # main loop
-def main():
-    global vault_session, data
-    vault_session = startup()
-    if vault_session is None:
-        return
-    data = vault_session.data
-
+def main_menu():
     while True:
         clear_screen()
         choice = select_menu("Key Keep 0.0.01", [
@@ -366,6 +407,25 @@ def main():
             settings_screen()
         elif choice == "Exit":
             return
+
+
+def main():
+    global vault_session, data
+    locked = False
+    while True:
+        vault_session = startup(locked=locked)
+        if vault_session is None:
+            return
+        data = vault_session.data
+
+        try:
+            with watch_session():
+                main_menu()
+            return
+        except IdleLock:
+            locked = True
+        finally:
+            data = vault_session = None
 
 
 

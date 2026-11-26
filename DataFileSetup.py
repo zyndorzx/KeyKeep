@@ -10,6 +10,7 @@ from cryptography.exceptions import UnsupportedAlgorithm
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
+from SessionActivity import ask
 from VaultCrypto import EncryptedVault, SUPPORTED_VAULT_FORMATS, VaultFileError, read_document
 
 
@@ -23,10 +24,10 @@ def ask_new_master_password():
         return True
 
     while True:
-        password = questionary.password(
+        password = ask(questionary.password(
             "New master password", validate=validate, qmark=""
-        ).unsafe_ask()
-        confirm = questionary.password("Confirm new master password", qmark="").unsafe_ask()
+        ))
+        confirm = ask(questionary.password("Confirm new master password", qmark=""))
         if secrets.compare_digest(password.encode("utf-8"), confirm.encode("utf-8")):
             return password
         print("Passwords do not match. Try again.")
@@ -73,7 +74,7 @@ def save_vault_and_recovery_sheet(vault, codes):
     pdf = _recovery_pdf(codes)
 
     while True:
-        filename = questionary.text("Recovery PDF path", default=str(default), qmark="").unsafe_ask()
+        filename = ask(questionary.text("Recovery PDF path", default=str(default), qmark=""))
         try:
             path = Path(filename.strip().strip('"')).expanduser()
             if path.suffix.lower() != ".pdf":
@@ -106,7 +107,7 @@ def setup_vault(path, document, original):
             raise VaultFileError("data.json has an unrecognized format. It was left alone.")
         print("Upgrade the existing plaintext vault to encrypted storage.")
         print("Old copies, backups, and synced versions may still contain plaintext.")
-        password = questionary.password("Current master password", qmark="").unsafe_ask()
+        password = ask(questionary.password("Current master password", qmark=""))
         if not secrets.compare_digest(password.strip().lower().encode("utf-8"), previous.lower().encode("utf-8")):
             print("Incorrect current master password. The existing file was left alone.")
             return None
