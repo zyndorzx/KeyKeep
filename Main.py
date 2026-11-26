@@ -2,6 +2,7 @@ import json
 import os
 import secrets
 import string
+from pathlib import Path
 import questionary
 
 # setup
@@ -15,14 +16,37 @@ def select_menu(message, choices):
     ).unsafe_ask()
 
 
-with open("data.json", "r", encoding="utf-8") as f:
-    data = json.load(f)
+DATA_FILE = Path.cwd() / "data.json"
+try:
+    with DATA_FILE.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+except FileNotFoundError:
+    raise SystemExit("data.json is missing. Run DataFileSetup.py to create a new data file.") from None
+
 def save_data():
-    with open("data.json", "w", encoding="utf-8") as f:
+    with DATA_FILE.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 def master_password_matches(password):
     return password.strip().lower() == data["MasterPassword"].lower()
 
+def delete_all_data():
+    confirm = questionary.confirm(
+        "Are you sure you want to delete all data? This action cannot be undone.",
+        default=False,
+        qmark=""
+    ).unsafe_ask()
+    if not confirm:
+        return
+
+    try:
+        DATA_FILE.unlink(missing_ok=True)
+    except OSError as error:
+        print(f"Could not delete data.json: {error}")
+        questionary.press_any_key_to_continue().unsafe_ask()
+        return
+
+    print("data.json has been deleted. Run DataFileSetup.py before restarting Key Keep.")
+    raise SystemExit(0)
 
 
 
@@ -97,8 +121,8 @@ def add_login(vault):
             return
 
 
-def unlock_with_master_password():
-    password = questionary.password("Master Password", qmark="").unsafe_ask()
+def unlock_with_master_password(message="Master Password"):
+    password = questionary.password(message, qmark="").unsafe_ask()
     if master_password_matches(password):
         return True
     print("Incorrect master password.")
@@ -249,6 +273,50 @@ def Generators_and_tools_screen():
 
 
 
+def reset_master_password():
+    clear_screen()
+    if not unlock_with_master_password("Current Master Password"):
+        return
+
+    def validate_new_password(value):
+        if not value.strip():
+            return "The new master password cannot be empty."
+        if value.strip().lower() == "exit":
+            return "Choose a password other than EXIT."
+        return True
+
+    new_password = questionary.password(
+        "New Master Password", qmark="", validate=validate_new_password
+    ).unsafe_ask().strip()
+    confirmation = questionary.password("Confirm New Master Password", qmark="").unsafe_ask().strip()
+    if confirmation != new_password:
+        print("Passwords do not match.")
+    else:
+        data["MasterPassword"] = new_password
+        save_data()
+        print("Master password updated.")
+
+    questionary.press_any_key_to_continue().unsafe_ask()
+
+
+def settings_screen():
+    while True:
+        clear_screen()
+        choice = select_menu("Settings", [
+            "Reset Master Password",
+            "Self Destruct Setup",
+            "DELETE ALL DATA IMMEDIATELY",
+            questionary.Separator(" "),
+            "Back to Menu",
+        ])
+        if choice == "Back to Menu":
+            return
+        elif choice == "DELETE ALL DATA IMMEDIATELY":
+            delete_all_data()
+        elif choice == "Reset Master Password":
+            reset_master_password()
+
+
 # main loop
 def main():
     if not startup():
@@ -267,8 +335,7 @@ def main():
         elif choice == "Generators and Tools":
             Generators_and_tools_screen()
         elif choice == "Settings":
-            print("Settings is not available yet.")
-            questionary.press_any_key_to_continue().unsafe_ask()
+            settings_screen()
         elif choice == "Exit":
             return
 
