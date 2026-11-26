@@ -2,32 +2,36 @@ import json
 import os
 import secrets
 import string
-
 import questionary
 
-
+# setup
 def clear_screen():
     os.system("cls" if os.name == "nt" else "clear")
 
 
+def select_menu(message, choices):
+    return questionary.select(
+        message, choices=choices, qmark="", erase_when_done=True
+    ).unsafe_ask()
+
+
 with open("data.json", "r", encoding="utf-8") as f:
     data = json.load(f)
-
-
 def save_data():
     with open("data.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
-
 def master_password_matches(password):
     return password.strip().lower() == data["MasterPassword"].lower()
 
 
+
+
+# startup usefull when we want to add some sort of backend users can host on their own servers and have everything sync across devices
 def startup():
     clear_screen()
 
     while True:
-        password = questionary.password("Master Password (or type EXIT)").unsafe_ask()
+        password = questionary.password("Master Password (or type EXIT)", qmark="").unsafe_ask()
         if master_password_matches(password):
             return True
         if password.strip().lower() == "exit":
@@ -35,6 +39,8 @@ def startup():
         print("Incorrect master password. Please try again.")
 
 
+
+# vaults screen functions
 def ask_name(message, existing_names, default=""):
     def validate(value):
         name = value.strip()
@@ -44,7 +50,7 @@ def ask_name(message, existing_names, default=""):
             return "That name already exists."
         return True
 
-    return questionary.text(message, default=default, validate=validate).unsafe_ask().strip()
+    return questionary.text(message, default=default, validate=validate, qmark="").unsafe_ask().strip()
 
 
 def add_login(vault):
@@ -53,17 +59,17 @@ def add_login(vault):
 
     name = ask_name("Login name (e.g. Gmail)", vault)
     login = {
-        "email": questionary.text("Email").unsafe_ask().strip(),
-        "password": questionary.password("Password").unsafe_ask(),
-        "details": questionary.text("Details").unsafe_ask().strip(),
+        "email": questionary.text("Email", qmark="").unsafe_ask().strip(),
+        "password": questionary.password("Password", qmark="").unsafe_ask(),
+        "details": questionary.text("Details", qmark="").unsafe_ask().strip(),
         "MasterPasswordRequired": questionary.confirm(
-            "Require master password to view?", default=False
+            "Require master password to view?", default=False, qmark=""
         ).unsafe_ask(),
     }
 
     while True:
         required = "On" if login["MasterPasswordRequired"] else "Off"
-        choice = questionary.select("Review login", choices=[
+        choice = select_menu("Review login", [
             questionary.Choice(f"Name: {name}", value="name"),
             questionary.Choice(f"Email: {login['email']}", value="email"),
             questionary.Choice("Change Password", value="password"),
@@ -71,16 +77,16 @@ def add_login(vault):
             questionary.Choice(f"Master Password Required: {required}", value="toggle"),
             "Save Login",
             "Cancel",
-        ]).unsafe_ask()
+        ])
 
         if choice == "name":
             name = ask_name("Login name", vault, default=name)
         elif choice == "email":
-            login["email"] = questionary.text("Email", default=login["email"]).unsafe_ask().strip()
+            login["email"] = questionary.text("Email", default=login["email"], qmark="").unsafe_ask().strip()
         elif choice == "password":
-            login["password"] = questionary.password("Password").unsafe_ask()
+            login["password"] = questionary.password("Password", qmark="").unsafe_ask()
         elif choice == "details":
-            login["details"] = questionary.text("Details", default=login["details"]).unsafe_ask().strip()
+            login["details"] = questionary.text("Details", default=login["details"], qmark="").unsafe_ask().strip()
         elif choice == "toggle":
             login["MasterPasswordRequired"] = not login["MasterPasswordRequired"]
         elif choice == "Save Login":
@@ -95,7 +101,7 @@ def view_login(name, login):
     clear_screen()
     required = login.get("MasterPasswordRequired", False)
     if required:
-        password = questionary.password("Master Password").unsafe_ask()
+        password = questionary.password("Master Password", qmark="").unsafe_ask()
         if not master_password_matches(password):
             print("Incorrect master password.")
             questionary.press_any_key_to_continue().unsafe_ask()
@@ -112,31 +118,25 @@ def view_login(name, login):
 def vault_contents_screen(vault_name, vault):
     while True:
         clear_screen()
-        print(f"Contents of {vault_name}\n")
 
-        logins = {str(number): name for number, name in enumerate(vault, start=3)}
-        if not logins:
+        choices = [questionary.Choice(name) for name in vault]
+        if choices:
+            choices.append(questionary.Separator(" "))
+        else:
             print("Nothing added yet...")
-        for login_id, name in logins.items():
-            print(f"[{login_id}] {name}")
 
-        print("\n[1] Add Login")
-        print("[2] Back")
-        choice = questionary.text(
-            "Choose an option or enter a login ID",
-            validate=lambda value: (
-                value.strip() in ("1", "2") or value.strip() in logins
-                or "Enter one of the numbers shown."
-            ),
-        ).unsafe_ask().strip()
+        choices.extend([
+            questionary.Choice("Add Login", value=1),
+            questionary.Choice("Back", value=2),
+        ])
+        choice = select_menu(f"Contents of {vault_name}", choices)
 
-        if choice == "1":
+        if choice == 1:
             add_login(vault)
-        elif choice == "2":
+        elif choice == 2:
             return
         else:
-            name = logins[choice]
-            view_login(name, vault[name])
+            view_login(choice, vault[choice])
 
 
 def vaults_screen():
@@ -147,17 +147,21 @@ def vaults_screen():
             questionary.Choice(name, value=index)
             for index, name in enumerate(vaults)
         ]
+        if choices:
+            choices.append(questionary.Separator(" "))
         choices.append("Back to Menu")
-        selected = questionary.select("Pick a vault", choices=choices).unsafe_ask()
+        selected = select_menu("Pick a vault", choices)
         if selected == "Back to Menu":
             return
 
         vault_name = list(vaults)[selected]
         while True:
             clear_screen()
-            choice = questionary.select(vault_name, choices=[
-                "View Contents", "Rename Vault", "Back to Vaults", "Back to Menu",
-            ]).unsafe_ask()
+            choice = select_menu(vault_name, [
+                "View Contents", "Rename Vault",
+                questionary.Separator(" "),
+                "Back to Vaults", "Back to Menu",
+            ])
 
             if choice == "View Contents":
                 vault_contents_screen(vault_name, vaults[vault_name])
@@ -172,6 +176,11 @@ def vaults_screen():
             elif choice == "Back to Menu":
                 return
 
+
+
+
+
+# generate password screen
 
 def generate_password(length, include_symbols):
     groups = [string.ascii_lowercase, string.ascii_uppercase, string.digits]
@@ -194,29 +203,35 @@ def valid_password_length(value):
 def Generators_and_tools_screen():
     while True:
         clear_screen()
-        choice = questionary.select("Generators and Tools", choices=[
+        choice = select_menu("Generators and Tools", [
             "Generate Password", "Back to Menu",
-        ]).unsafe_ask()
+        ])
         if choice == "Back to Menu":
             return
 
         length = questionary.text(
-            "Password length", default="20", validate=valid_password_length
+            "Password length", default="20", validate=valid_password_length, qmark=""
         ).unsafe_ask()
-        include_symbols = questionary.confirm("Include symbols?", default=True).unsafe_ask()
+        include_symbols = questionary.confirm("Include symbols?", default=True, qmark="").unsafe_ask()
         print(f"\nGenerated password: {generate_password(int(length), include_symbols)}")
         questionary.press_any_key_to_continue().unsafe_ask()
 
 
+
+
+
+# main loop
 def main():
     if not startup():
         return
 
     while True:
         clear_screen()
-        choice = questionary.select("Key Keep 0.0.01", choices=[
-            "View Vaults", "Generators and Tools", "Settings", "Exit",
-        ]).unsafe_ask()
+        choice = select_menu("Key Keep 0.0.01", [
+            "View Vaults", "Generators and Tools", "Settings",
+            questionary.Separator(" "),
+            "Exit",
+        ])
 
         if choice == "View Vaults":
             vaults_screen()
@@ -229,6 +244,11 @@ def main():
             return
 
 
+
+
+
+
+# dw about this stuff, just a way to make sure the program exits gracefully when the user presses Ctrl+C or Ctrl+D
 if __name__ == "__main__":
     try:
         main()
