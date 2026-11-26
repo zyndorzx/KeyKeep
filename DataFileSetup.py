@@ -99,6 +99,24 @@ def save_vault_and_recovery_sheet(vault, codes):
 
 def setup_vault(path, document, original):
     if document is None:
+        storage = ask(questionary.select(
+            "Where would you like to store your vault?",
+            choices=[
+                questionary.Choice("Locally on this device", value="local"),
+                questionary.Choice("Your hosted cloud (coming soon)", value="cloud"),
+                questionary.Separator(" "),
+                questionary.Choice("Exit", value="exit"),
+            ],
+            qmark="",
+            erase_when_done=True,
+        ))
+        if storage == "exit":
+            return None
+        if storage == "cloud":
+            print("Hosted cloud storage is coming soon. Please choose local storage for now.")
+            ask(questionary.press_any_key_to_continue())
+            return None
+
         print("Set up your encrypted Key Keep vault.")
         data = {"Vaults": {}}
     else:

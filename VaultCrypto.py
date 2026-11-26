@@ -52,7 +52,7 @@ def _decode(value, size=None):
 
 
 def _credential_key(credential, salt):
-    # The format fixes the cost in code. A file cannot request weaker or larger settings.
+    # the format fixes the cost in code. A file cannot request weaker or larger settings.
     return Argon2id(
         salt=salt, length=32, iterations=3, lanes=4, memory_cost=256 * 1024
     ).derive(credential)
@@ -147,6 +147,45 @@ def _recover_key(header, code):
     raise InvalidCredential()
 
 
+def _validated_header(document):
+    """Return the authenticated header fields after checking their shape."""
+    if not isinstance(document, dict):
+        raise VaultFileError("The encrypted vault has an invalid format.")
+
+    format_name = document.get("format")
+    if format_name not in SUPPORTED_VAULT_FORMATS:
+        raise VaultFileError("This encrypted vault version is not supported.")
+
+    vault_id = document.get("id")
+    if (
+        not isinstance(vault_id, str)
+        or len(vault_id) != 32
+        or any(character not in "0123456789abcdef" for character in vault_id)
+    ):
+        raise VaultFileError("Invalid vault ID.")
+
+    password_slot = document.get("password")
+    if not isinstance(password_slot, dict):
+        raise VaultFileError("Invalid vault credential slot.")
+
+    recovery_slots = document.get("recovery")
+    if not isinstance(recovery_slots, list) or len(recovery_slots) != RECOVERY_CODE_COUNT:
+        raise VaultFileError("Invalid recovery slots.")
+    if any(slot is not None and not isinstance(slot, dict) for slot in recovery_slots):
+        raise VaultFileError("Invalid recovery slot.")
+
+    vault = document.get("vault")
+    if not isinstance(vault, dict):
+        raise VaultFileError("Invalid encrypted vault field.")
+
+    return {
+        "format": format_name,
+        "id": vault_id,
+        "password": password_slot,
+        "recovery": recovery_slots,
+    }
+
+
 def _payload_context(header):
     # Authenticate the envelope and all credential slots with the vault contents.
     return b"Key Keep payload\0" + _json_bytes(header)
@@ -168,7 +207,7 @@ def read_document(path):
 
 
 def _replace_document(path, expected, contents):
-    # The temporary file is in the same directory and contains ciphertext only.
+    # the temporary file is in the same directory and contains ciphertext only.
     temporary_path = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".keykeep-", delete=False) as stream:
@@ -185,7 +224,7 @@ def _replace_document(path, expected, contents):
             if actual != expected:
                 raise VaultFileError("data.json changed on disk. Restart Key Keep before saving.")
             if expected is None:
-                # Publish a complete new file without overwriting any file created meanwhile.
+                # publish a complete new file without overwriting any file created meanwhile.
                 if os.name == "nt":
                     temporary_path.rename(path)
                 else:
@@ -251,16 +290,8 @@ class EncryptedVault:
 
     @classmethod
     def unlock(cls, path, document, original, credential, *, recovery=False):
-        format_name = document.get("format")
-        if format_name not in SUPPORTED_VAULT_FORMATS:
-            raise VaultFileError("This encrypted vault version is not supported.")
-        vault_id = document.get("id")
-        if not isinstance(vault_id, str) or len(vault_id) != 32 or any(c not in "0123456789abcdef" for c in vault_id):
-            raise VaultFileError("Invalid vault ID.")
-        slots = document.get("recovery")
-        if not isinstance(slots, list) or len(slots) != RECOVERY_CODE_COUNT:
-            raise VaultFileError("Invalid recovery slots.")
-        header = {name: document.get(name) for name in ("format", "id", "password", "recovery")}
+        header = _validated_header(document)
+        format_name, vault_id = header["format"], header["id"]
         recovered_slot = None
         if recovery:
             code = "".join(credential.split()).replace("-", "")
@@ -320,6 +351,10 @@ class EncryptedVault:
 
     def delete(self):
         with _write_lock(self.path):
-            if self.path.read_bytes() != self._original:
+            try:
+                actual = self.path.read_bytes()
+            except FileNotFoundError as error:
+                raise VaultFileError("data.json no longer exists. It may already have been deleted.") from error
+            if actual != self._original:
                 raise VaultFileError("data.json changed on disk. Restart Key Keep before deleting.")
             self.path.unlink()
