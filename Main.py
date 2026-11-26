@@ -97,15 +97,20 @@ def add_login(vault):
             return
 
 
+def unlock_with_master_password():
+    password = questionary.password("Master Password", qmark="").unsafe_ask()
+    if master_password_matches(password):
+        return True
+    print("Incorrect master password.")
+    questionary.press_any_key_to_continue().unsafe_ask()
+    return False
+
+
 def view_login(name, login):
     clear_screen()
     required = login.get("MasterPasswordRequired", False)
-    if required:
-        password = questionary.password("Master Password", qmark="").unsafe_ask()
-        if not master_password_matches(password):
-            print("Incorrect master password.")
-            questionary.press_any_key_to_continue().unsafe_ask()
-            return
+    if required and not unlock_with_master_password():
+        return
 
     print(name)
     for field, value in login.items():
@@ -140,7 +145,8 @@ def vault_contents_screen(vault_name, vault):
 
 
 def vaults_screen():
-    vaults = data.get("Vaults", {})
+    vaults = data.setdefault("Vaults", {})
+    protected_vaults = data.setdefault("VaultMasterPasswordRequired", {})
     while True:
         clear_screen()
         choices = [
@@ -149,16 +155,31 @@ def vaults_screen():
         ]
         if choices:
             choices.append(questionary.Separator(" "))
-        choices.append("Back to Menu")
+        choices.extend(["New Vault", "Back to Menu"])
         selected = select_menu("Pick a vault", choices)
         if selected == "Back to Menu":
             return
+        if selected == "New Vault":
+            name = ask_name("Vault name", vaults)
+            required = questionary.confirm(
+                "Require the master password to open this vault?", default=False, qmark=""
+            ).unsafe_ask()
+            vaults[name] = {}
+            if required:
+                protected_vaults[name] = True
+            save_data()
+            continue
 
         vault_name = list(vaults)[selected]
+        if protected_vaults.get(vault_name) and not unlock_with_master_password():
+            continue
+
         while True:
             clear_screen()
+            required = "On" if protected_vaults.get(vault_name) else "Off"
             choice = select_menu(vault_name, [
                 "View Contents", "Rename Vault",
+                questionary.Choice(f"Master Password Required: {required}", value="toggle_password"),
                 questionary.Separator(" "),
                 "Back to Vaults", "Back to Menu",
             ])
@@ -169,8 +190,16 @@ def vaults_screen():
                 new_name = ask_name("New vault name", vaults, default=vault_name)
                 if new_name != vault_name:
                     vaults[new_name] = vaults.pop(vault_name)
+                    if vault_name in protected_vaults:
+                        protected_vaults[new_name] = protected_vaults.pop(vault_name)
                     vault_name = new_name
                     save_data()
+            elif choice == "toggle_password":
+                if protected_vaults.get(vault_name):
+                    del protected_vaults[vault_name]
+                else:
+                    protected_vaults[vault_name] = True
+                save_data()
             elif choice == "Back to Vaults":
                 break
             elif choice == "Back to Menu":
