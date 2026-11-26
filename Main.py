@@ -1,9 +1,16 @@
-import json
 import os
 import secrets
 import string
-from pathlib import Path
 import questionary
+from cryptography.exceptions import UnsupportedAlgorithm
+
+from DataFileSetup import (
+    DATA_FILE,
+    ask_new_master_password,
+    save_vault_and_recovery_sheet,
+    setup_vault,
+)
+from VaultCrypto import EncryptedVault, InvalidCredential, SUPPORTED_VAULT_FORMATS, VaultFileError, read_document
 
 # setup
 def clear_screen():
@@ -16,18 +23,8 @@ def select_menu(message, choices):
     ).unsafe_ask()
 
 
-DATA_FILE = Path.cwd() / "data.json"
-try:
-    with DATA_FILE.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-except FileNotFoundError:
-    raise SystemExit("data.json is missing. Run DataFileSetup.py to create a new data file.") from None
-
 def save_data():
-    with DATA_FILE.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-def master_password_matches(password):
-    return password.strip().lower() == data["MasterPassword"].lower()
+    vault_session.save()
 
 def delete_all_data():
     confirm = questionary.confirm(
@@ -39,28 +36,55 @@ def delete_all_data():
         return
 
     try:
-        DATA_FILE.unlink(missing_ok=True)
-    except OSError as error:
+        vault_session.delete()
+    except (OSError, VaultFileError) as error:
         print(f"Could not delete data.json: {error}")
         questionary.press_any_key_to_continue().unsafe_ask()
         return
 
-    print("data.json has been deleted. Run DataFileSetup.py before restarting Key Keep.")
+    print("data.json has been deleted. First-run setup will open when you restart Key Keep.")
     raise SystemExit(0)
 
 
 
-# startup usefull when we want to add some sort of backend users can host on their own servers and have everything sync across devices
 def startup():
     clear_screen()
+    document, original = read_document(DATA_FILE)
+    if document is None or document.get("format") not in SUPPORTED_VAULT_FORMATS:
+        return setup_vault(DATA_FILE, document, original)
 
     while True:
-        password = questionary.password("Master Password (or type EXIT)", qmark="").unsafe_ask()
-        if master_password_matches(password):
-            return True
-        if password.strip().lower() == "exit":
-            return False
-        print("Incorrect master password. Please try again.")
+        choice = select_menu("Unlock Key Keep", [
+            "Enter Master Password", "Recover With a Backup Code",
+            questionary.Separator(" "), "Exit",
+        ])
+        if choice == "Exit":
+            return None
+
+        recovery = choice == "Recover With a Backup Code"
+        label = "Backup code" if recovery else "Master password"
+        credential = questionary.password(label, qmark="").unsafe_ask()
+        try:
+            session = EncryptedVault.unlock(DATA_FILE, document, original, credential, recovery=recovery)
+        except InvalidCredential:
+            print(f"{label} did not unlock this vault.")
+            continue
+        finally:
+            del credential
+
+        if recovery:
+            if session.uses_single_use_codes:
+                print("Backup code accepted. Set a new master password to finish recovery.")
+                session = session.consume_recovery_code(ask_different_master_password(session))
+                remaining = session.remaining_recovery_codes
+                print(f"Password updated. Code used. Unused backup codes: {remaining}.")
+                if not remaining:
+                    print("Reset your master password in Settings to generate a new recovery sheet.")
+                questionary.press_any_key_to_continue().unsafe_ask()
+            else:
+                print("Legacy code accepted. Save a new sheet with four single-use codes.")
+                session = replace_master_password(session)
+        return session
 
 
 
@@ -123,7 +147,7 @@ def add_login(vault):
 
 def unlock_with_master_password(message="Master Password"):
     password = questionary.password(message, qmark="").unsafe_ask()
-    if master_password_matches(password):
+    if vault_session.password_matches(password):
         return True
     print("Incorrect master password.")
     questionary.press_any_key_to_continue().unsafe_ask()
@@ -273,29 +297,30 @@ def Generators_and_tools_screen():
 
 
 
+def ask_different_master_password(session):
+    password = ask_new_master_password()
+    while session.password_matches(password):
+        print("Choose a password different from your current password.")
+        password = ask_new_master_password()
+    return password
+
+
+def replace_master_password(session):
+    password = ask_different_master_password(session)
+    replacement, codes = session.rotate_credentials(password)
+    del password
+    save_vault_and_recovery_sheet(replacement, codes)
+    print("Master password updated. Use the new recovery sheet with the current vault.")
+    return replacement
+
+
 def reset_master_password():
+    global vault_session
     clear_screen()
     if not unlock_with_master_password("Current Master Password"):
         return
-
-    def validate_new_password(value):
-        if not value.strip():
-            return "The new master password cannot be empty."
-        if value.strip().lower() == "exit":
-            return "Choose a password other than EXIT."
-        return True
-
-    new_password = questionary.password(
-        "New Master Password", qmark="", validate=validate_new_password
-    ).unsafe_ask().strip()
-    confirmation = questionary.password("Confirm New Master Password", qmark="").unsafe_ask().strip()
-    if confirmation != new_password:
-        print("Passwords do not match.")
-    else:
-        data["MasterPassword"] = new_password
-        save_data()
-        print("Master password updated.")
-
+    print("Changing the password also replaces all four backup codes.")
+    vault_session = replace_master_password(vault_session)
     questionary.press_any_key_to_continue().unsafe_ask()
 
 
@@ -319,8 +344,11 @@ def settings_screen():
 
 # main loop
 def main():
-    if not startup():
+    global vault_session, data
+    vault_session = startup()
+    if vault_session is None:
         return
+    data = vault_session.data
 
     while True:
         clear_screen()
@@ -350,3 +378,7 @@ if __name__ == "__main__":
         main()
     except (KeyboardInterrupt, EOFError):
         print("\nExiting Key Keep.")
+    except UnsupportedAlgorithm:
+        raise SystemExit("Key Keep needs a cryptography build that supports Argon2id.") from None
+    except (OSError, VaultFileError) as error:
+        raise SystemExit(f"Key Keep: {error}") from None
