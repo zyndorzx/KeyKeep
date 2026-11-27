@@ -14,6 +14,7 @@ from DataFileSetup import (
     setup_vault,
 )
 from SessionActivity import IdleLock, ask, watch_session
+from TerminalBanner import ask_banner_menu
 from VaultCrypto import EncryptedVault, InvalidCredential, SUPPORTED_VAULT_FORMATS, VaultFileError, read_document
 
 # setup
@@ -21,10 +22,11 @@ def clear_screen():
     os.system("cls" if os.name == "nt" else "clear")
 
 
-def select_menu(message, choices, *, default=None):
-    return ask(questionary.select(
+def select_menu(message, choices, *, default=None, banner=False):
+    prompt = questionary.select(
         message, choices=choices, default=default, qmark="", erase_when_done=True
-    ))
+    )
+    return ask_banner_menu(prompt) if banner else ask(prompt)
 
 
 def save_data():
@@ -66,7 +68,7 @@ def startup(*, locked=False):
     choices.extend([questionary.Separator(" "), "Exit"])
 
     while True:
-        choice = select_menu(title, choices)
+        choice = select_menu(title, choices, banner=True)
         if choice == "Exit":
             return None
 
@@ -397,7 +399,7 @@ def main_menu():
             "View Vaults", "Generators and Tools", "Settings",
             questionary.Separator(" "),
             "Exit",
-        ])
+        ], banner=True)
 
         if choice == "View Vaults":
             vaults_screen()

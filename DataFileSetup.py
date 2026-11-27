@@ -11,6 +11,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 from SessionActivity import ask
+from TerminalBanner import ask_banner_menu
 from VaultCrypto import EncryptedVault, SUPPORTED_VAULT_FORMATS, VaultFileError, read_document
 
 
@@ -99,7 +100,7 @@ def save_vault_and_recovery_sheet(vault, codes):
 
 def setup_vault(path, document, original):
     if document is None:
-        storage = ask(questionary.select(
+        storage = ask_banner_menu(questionary.select(
             "Where would you like to store your vault?",
             choices=[
                 questionary.Choice("Locally on this device", value="local"),
